@@ -1,0 +1,573 @@
+---
+title: "Use Case: Ruminant data"
+author: 
+- name: Anabella Lozza
+  email: anabellalozza@agro.unlpam.edu.ar
+date: "2025-02-04"
+output:
+  html_document:
+    toc: true
+    theme: "united"
+    toc_float: true
+    code_folding: hide
+    self_contained: true
+  pdf_document:
+    toc: true
+---
+> This paper is a refinement of the ERA dataset use case by *Joshi, N.; Steward, P. and Rosenstock, Todd (2024)* in **"Guide to Livestock Data Analysis in the ERA Dataset"**
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  echo = TRUE,  # Temporarily set to TRUE for debugging
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+```{r packages,include=F,eval=T,echo=F}
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  install.packages("pacman")
+}
+pacman::p_load(
+  sf, knitr, rnaturalearth, rnaturalearthdata, 
+  ggplot2, viridis, shiny, dplyr, treemap, treemapify, plotly, data.table,
+  s3fs, arrow, devtools, gh, htmlwidgets,remotes,gridExtra
+)
+
+if(!require(ERAgON)){
+  remotes::install_github(repo="https://github.com/EiA2030/ERAgON",build_vignettes = T)
+  library(ERAgON)
+}
+
+if(!require(ERAg)){
+  remotes::install_github(repo="https://github.com/EiA2030/ERAg",build_vignettes = T)
+  library(ERAg)
+}
+
+```
+
+# Use Case: Understanding the impact of tree fodders on feed intake and weight gain
+This project involves retrieving, exploring, and analysing the data provided in the ERAg R Package, "Evidence for Resilient Agriculture" (version 1.0.3.0; <https://alliancebioversityciat.org/publications-data/erag-r-package-evidence-resilient-agriculture-v1030)> to conduct a meta-analysis study to evaluate the effects of supplementing different species of tropical tree foliages in ruminants (cattle, sheep, and goats) on animal performance. 
+To achieve this, we will follow these steps:
+
+**1. Loading Required Libraries and Functions**
+
+
+**2.Data Cleaning and Filtering**
+
+*2.1 Sub-setting the data to specific livestock (e.g., cattle, sheep, goats) and practices involving tree fodder supplementing.*
+
+*2.2 Harmonizing Units: Converts weight units (e.g., kg to g per individual per day) for consistent analysis.*
+
+
+**3. Combining data.**
+
+**4. Plotting simple figures**
+
+*4.1  Plotting weight gain distribution with outliers*
+
+*4.2  Plotting weight gain distribution without outliers*
+
+**5. Effects of tree fodder feed from Random Effect Models**
+
+*5.1  Loading Required Libraries and Functions*
+
+*5.2  Data cleaning and subsetting data to meta analysis*
+
+
+## 1. Loading and saving the data
+
+This section retrieves the most recent version of the livestock dataset from an S3 bucket. It lists the available files, downloads the required .RData file, and loads it into R using miceadds::load.Rdata2. The objective is to prepare the dataset (livestock_metadata) for analysis.
+
+```{r Loading the new version of ERA, message=F,echo=T,collapse=FALSE}
+# First we need to get the detailed dataset containing the management information that relates to the experiment, this is in the Atlas S3 Bucket
+
+  dl_dir<-"downloaded_data"
+  s3<-s3fs::S3FileSystem$new(anonymous = T)
+  era_s3<-"s3://digital-atlas/era"
+  
+  # List the files in the s3 bucket
+  files<-s3$dir_ls(file.path(era_s3,"data"))
+  # This is the most recent version of the datas3://digital-atlas/era/data/skinny_cow_2022-YYYY-MM-DD.RData (substitute most recent date into filepath)
+  files<-tail(grep(".RData",grep("skinny_cow_2022",files,value=T),value=T),1)
+  
+  # Set a save location for the dataset (amend to something more suitable for your needs)
+  save_path<-file.path(getwd(),dl_dir,basename(files))
+  
+  if(!file.exists(save_path)){
+    s3$file_download(files,save_path,overwrite = T)
+  }
+  
+  livestock_metadata<- miceadds::load.Rdata2(file=basename(save_path),path=dirname(save_path))
+```
+
+## 2. Data cleaning and subsetting
+
+### 2.1 Subsetting the data
+
+Section focuses on filtering the dataset to a specific scope for analysis. It begins by identifying subpractices related to "Feed Addition" and "Feed Substitution" within the "Animals" theme, specifically those involving agroforestry. The data is then narrowed to livestock types of interest, such as cattle, goats, and sheep, and further refined to focus on key productivity outcomes, including "Meat Yield," "Weight Gain," and "Milk Yield." A final filtering is performed by tree species of interest. Confounding practices, such as "Concentrates" and "Feed Crop," are excluded to improve data quality. 
+
+```{r subsetting the new version of ERA,  message=F,echo=T,collapse=FALSE}
+focal_pracs<-PracticeCodes[Practice %in% c("Feed Addition","Feed Substitution") 
+                            & grepl("Agrofor",Subpractice),Code]
+
+data<-ERA.Compiled[grepl(paste(focal_pracs,collapse = "|"),plist)]
+
+# List the files in the s3 bucket
+files<-s3$dir_ls(file.path(era_s3,"data"))
+# This should be the most recent version of the data era_compiled-v1.0_2018-v1.1_2020-skinny_cow_2022_YYYY_MM_DD.parquet
+files<-tail(grep("parquet",grep("era_compiled",files,value=T),value=T),1)
+
+# Set a save location for the dataset (amend to something more suitable for your needs)
+save_path<-file.path(getwd(),dl_dir,basename(files))
+
+if(!file.exists(save_path)){
+  s3$file_download(files,save_path,overwrite = T)
+}
+
+ERA.Compiled_new<-arrow::read_parquet(save_path)
+data_new<-ERA.Compiled_new[Version=="skinny_cow_2022" & grepl(paste(focal_pracs,collapse = "|"),plist)]
+
+# Remove confounding subpractices
+data_new<-data_new[!grepl("Concentrates|Feed Crop|Breed|Feed NonCrop",SubPrName)]
+
+# The newer dataset on the s3 should be superior to old dataset so let's use it
+data<-data_new
+
+# Remove mechanical processing (this is just going to be chopping tree forages, probably not of interest)
+  data[,SubPrName:=gsub("-Feed Mech Process|-Grazing Cut & Carry","",SubPrName)]
+  
+# Looking at any practices than involve tree fodder addition or substitution
+  data<-data[,tree_fodder_add:=F][grepl("Feed AgFor (Add)",SubPrName,fixed=T),tree_fodder_add:=T]
+  data<-data[,tree_fodder_sub:=F][grepl("Feed AgFor (Sub)",SubPrName,fixed=T),tree_fodder_sub:=T]
+
+# 1.2) Subset to cattle and small ruminants #####
+  focal_prods<-c("Cattle","Goat","Sheep")
+  
+  data <- data |> filter(Product.Simple %in% focal_prods)
+
+# 1.3) Subset to outcomes of interest  #####
+  focal_out<-c("Meat Yield","Weight Gain","Milk Yield")
+  
+   data <- data |> filter(Out.SubInd %in% focal_out)
+   
+# 1.4) Subset to tree of interest  #####
+  focal_tree<-c("Acacia angustissima", "Acacia brevispica", "Acacia etbaica", " Acacia karroo", "Acacia polyacantha", "Acacia saligna", "Acacia senegal", "Adansonia digitata", "Afzelia africana", "Albizia gummifera", "Albizia harveyi", "Annona senegalensis", "Atriplex nummularia", "Azadirachta indica", "Calliandra calothyrsus", "Chamaecytisus palmensis", "Combretum apiculatum", "Daniellia oliveri", "Delonix elata", "Dichrostachys cinerea", "Erythrina brucei", "Euclea schimperi", "Faidherbia albida", "Ficus natalensis", "Ficus polita", "Ficus thonningii", "Gliciridia sepium", "Gmelina arborea", "Grewia similis", "Harissonia abyssinica", "Jatropha curcas", "Khaya senegalensis", "Leucaena leucocephala", "Leucaena padilla", "Leucaena pallida", "Moringa oleifera", "Moringa stenopetala","Olea europaea", "Opuntia ficus indica", "Piliostigma thonningii", "Pithecellobium dulce", "Prosopis juliflora", "Psophocarpus scandens", "Pterocarpus erinaceus", "Pterocarpus lucens", "Sesbania goetzei", "Sesbania sesban", "Sesbania sp", "Terminalia sericea", "Vachellia nilotica", "Vachellia sieberiana", "Vachellia tortilis")
+  
+   data <- data |> filter(Tree.Feed %in% focal_tree)
+   
+```
+
+### 2.2 Harmonizing units
+
+Unit harmonization is essential when studying livestock papers to ensure consistency and comparability across diverse datasets. In livestock research, data on outcomes like feed intake or weight gain are often reported in various units, such as kilograms (kg), grams per individual per day (g/individual/day), or other measurement standards. Without harmonization, direct comparisons or meta-analyses become challenging, as the variability in units can introduce bias or inaccuracies in the interpretation of results. By standardizing units, such as converting weight data from kg to g/day or normalizing by the duration of the study, researchers can create a uniform dataset. This allows for meaningful cross-study comparisons, improved statistical analysis, and clearer insights into the impacts of specific practices on livestock productivity, such as weight gain or feed efficiency.
+```{r}
+# Harmonize units #####
+  data[Units %in% c("kg", "kg/individual", "kgt/individual") & !is.na(Duration),c("MeanT","MeanC","MeanT.Error","MeanC.Error","Units"):=.(round(1000*MeanT/(365*Duration),2),round(1000*MeanC/(365*Duration),2),round(1000*MeanT.Error/(365*Duration),2),round(1000*MeanC.Error/(365*Duration),2),"g/individual/day")
+              ][Units=="kg/d/individual",c("MeanT","MeanC","MeanT.Error","MeanC.Error","Units"):=.(round(1000*MeanT,2),round(1000*MeanC,2),round(1000*MeanT.Error,2),round(1000*MeanC.Error,2),"g/individual/day")]
+
+data <- data %>%
+  mutate(Units = recode(Units, 
+                        "g/d/individual" = "g/individual/day", 
+                        "g/d" = "g/individual/day"))
+
+#Remove inconsistent units
+data<-data[!grepl("g/kg/individual|kg/individual|l/d/individual",Units)]
+```
+
+### 2.3 Exploring the subsetted data
+
+After subsetting the data, you can explore the number of remaining papers that are within your research focus. The following table The table provides insights into the data coverage for different livestock practices, products, and outcomes. For example, "Feed Addition" applied to "Goat" for "Weight Gain" is reported in 15 studies with 46 observations from 6 countries. This information can help identify well-studied areas and data gaps in livestock research
+
+```{r presenting the remaining papers based on prac, message=F, echo=F}
+  # Practice Level
+  prac<- data[,.(no_studies=length(unique(Code)),
+          no_observations=.N,
+          no_countries=length(unique(Country))),by=.(PrName,Product.Simple,Out.SubInd)
+       ][order(no_studies,decreasing=T)]
+  
+  DT::datatable(
+  prac,
+  options = list(
+    scrollY = "400px",  # Set vertical scroll height
+    scrollX = TRUE,     # Enable horizontal scrolling
+    pageLength = 20,    # Initial number of rows displayed
+    fixedHeader = FALSE  # Keep column headers fixed while scrolling
+  )
+)
+
+
+```
+
+We can choose to explore the data in future detail. The table below shows the studies that looked at the impact of  adding tree fodders to diets of cattle goat and sheep.
+
+```{r presenting the remaining papers based on addition papers, message=F, echo=F}
+# Addition
+  tree_add<- data[tree_fodder_add==T,.(no_studies=length(unique(Code)),
+          no_observations=.N,
+          no_countries=length(unique(Country))),by=.(Product.Simple,Out.SubInd)
+  ][order(no_studies,decreasing=T)]
+
+  DT::datatable(
+  tree_add,
+  options = list(
+    scrollY = "400px",  # Set vertical scroll height
+    scrollX = TRUE,     # Enable horizontal scrolling
+    pageLength = 20,    # Initial number of rows displayed
+    fixedHeader = FALSE  # Keep column headers fixed while scrolling
+  )
+)
+
+```
+
+
+The table below shows the studies that looked at the impact of substitution of other ingredient types with tree fodders to diets of cattle goat and sheep.
+```{r presenting the remaining papers based on sub papers, message=F, echo=F}
+  # Substitution
+  tree_sub<- data[tree_fodder_sub==T,.(no_studies=length(unique(Code)),
+                            no_observations=.N,
+                            no_countries=length(unique(Country))),by=.(Product.Simple,Out.SubInd)
+  ][order(no_studies,decreasing=T)]
+
+DT::datatable(
+  tree_sub,
+  options = list(
+    scrollY = "400px",  # Set vertical scroll height
+    scrollX = TRUE,     # Enable horizontal scrolling
+    pageLength = 20,    # Initial number of rows displayed
+    fixedHeader = FALSE  # Keep column headers fixed while scrolling
+  )
+)
+```
+
+## 3. Combining data: Combining feed intake and weight gain outcomes 
+
+This script (unhide) integrates feed intake and weight gain data for livestock to analyze the relationship between feed types, including tree species, and animal performance. 
+
+It starts by filtering the feed intake data to include only entire diets with non-missing values. Tree species associated with feed intake are then merged into the dataset.
+
+Similarly, weight gain data for non-fish species is filtered, standardized by converting weight measurements into kilograms per day, and calculating the final weight (end weight) after a given period. The script then merges the feed intake data with the weight gain data using common identifiers. 
+
+This results in a unified dataset that combines feed intake (including tree species) with corresponding weight gain metrics for livestock, enabling detailed analysis of the impacts of different feed practices on animal growth.
+```{r feed intake and weight gain, echo=TRUE, message=FALSE, warning=FALSE}
+# 4.5) Feed Intake and Weight Gain with Tree Species #####
+
+# Filter Feed Intake data to include only entire diets and remove NA values
+feed_intake <- livestock_metadata$Data.Out[
+  Out.Subind == "Feed Intake" & is_entire_diet == TRUE & !is.na(ED.Intake.Item), 
+  .(B.Code, T.Name, A.Level.Name, Out.Subind, ED.Intake.Item, ED.Mean.T, Out.Unit)
+]
+
+
+# Select only relevant columns for feed trees and rename
+feed_trees <- data %>% 
+  select(Code, T.Descrip, Tree.Feed) %>% 
+  rename(`A.Level.Name` = T.Descrip, `B.Code` = Code)
+
+# Merge feed intake with tree species data
+feed_intake_trees <- merge(
+  feed_intake,
+  feed_trees,
+  by = c("B.Code", "A.Level.Name"),
+  all.x = TRUE  # Left join to retain all feed intake rows
+)
+
+# Filter Weight Gain data and remove no-focal products entries
+WG <- livestock_metadata$Data.Out[
+  Out.Subind == "Weight Gain" & P.Product %in% focal_prods,
+  .(B.Code, P.Product, T.Name, A.Level.Name, Out.WG.Start, Out.WG.Unit, Out.WG.Days, ED.Mean.T, Out.Unit)
+]
+
+# Define units to standardize and convert Weight Gain data
+units_per_day <- c(
+      "g/day", "g", "g/d", "g/individual/day", "g/head/day", "g/day/individual", 
+      "g/d/individual", "g/individual/d", "g/indivividual/day", "g/individual", 
+      "g/ndividual/day", "g/dindividual/day", "g/individual.day", "g /individual/day"
+    )
+    
+# Convert ED.Mean.T to kilograms/day only for specific units
+    WG[, ED.Mean.T_kg := ifelse(
+      Out.Unit %in% units_per_day,               # Check if Out.Unit is in the list
+      round(ED.Mean.T / 1000, 3),                   # Convert grams/day to kilograms/day and round
+      round(ED.Mean.T, 3)                           # Retain as is if not in the list
+    )]
+    
+    # Convert Out.WG.Start to kilograms if Out.WG.Unit indicates grams
+    WG[, Out.WG.Start_kg := ifelse(
+      grepl("^g$", Out.WG.Unit, ignore.case = TRUE), # Match exact "g"
+      Out.WG.Start / 1000,                          # Convert grams to kilograms
+      Out.WG.Start                                   # Retain if already in kilograms
+    )]
+    
+    # Calculate Out.WG.End
+    WG[, Out.WG.End := ifelse(
+      Out.Unit %in% units_per_day,                  # Daily gain units
+      round(Out.WG.Start_kg + (ED.Mean.T_kg * Out.WG.Days), 3),
+      ifelse(                                       # Non-daily gain units
+        grepl("^(g|kg|Kg)$", Out.Unit, ignore.case = TRUE),
+        round(Out.WG.Start_kg + ED.Mean.T_kg, 3),
+        NA                                          # Set to NA for other units
+      )
+    )]
+ #Merge with feed intake. 
+    # Rename columns in WG and feed intake datasets
+    WG <- WG %>%
+      rename(
+        `Weight Gain` = ED.Mean.T,
+        `Weight Gain Unit` = Out.Unit,
+        `Weight Gain_kg` = ED.Mean.T_kg
+      )
+    
+    feed_intake_trees <- feed_intake_trees %>%
+      rename(
+        `Feed Intake` = ED.Mean.T,
+        `Feed Intake Unit` = Out.Unit,
+      )
+    
+    # Perform an inner join on the common columns
+    intake_WG <- merge(
+      WG, feed_intake_trees,
+      by = c("B.Code", "T.Name", "A.Level.Name"),
+      all = FALSE # Inner join: retain only matching rows
+    )
+    
+    intake_WG<- intake_WG %>%
+      rename(`D.Item_raw`= ED.Intake.Item)
+    
+  #	Display	the	summary	table	of	diets
+DT::datatable(
+  intake_WG,
+  options = list(
+    scrollY = "400px",  # Set vertical scroll height
+    scrollX = TRUE,     # Enable horizontal scrolling
+    pageLength = 20,    # Initial number of rows displayed
+    fixedHeader = FALSE  # Keep column headers fixed while scrolling
+  )
+)
+
+
+```
+
+
+## 4. Plotting simple figures
+### 4.1 Plotting weight gain distribution with outliers 
+This script creates a Shiny app that allows users to visualize the weight gain distribution of three livestock categories: "Cattle," "Goat," and "Sheep," with outliers included. The dataset WG is filtered to include only rows where the P.Product column matches the selected animal.
+```{r weight gain distribution with outliers, echo=TRUE, message=FALSE, warning=FALSE}
+# Function to filter data for all animals and include outliers
+filter_all_animals <- function(data) {
+  # Subset data for selected animals
+  animal_data <- data[data$P.Product %in% c("Cattle", "Goat", "Sheep"), ]
+  return(animal_data)
+}
+
+# Filter the data for all animals
+animal_data_with_outliers <- filter_all_animals(WG)
+
+# Create individual plots for each animal with outliers
+plot_cattle <- ggplot(animal_data_with_outliers[animal_data_with_outliers$P.Product == "Cattle", ], aes(x = P.Product, y = `Weight Gain_kg`)) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 19) +
+  labs(
+    x = "Animal Type",
+    y = "Weight Gain (kg/day)"
+  ) +
+  theme_minimal()
+
+plot_goat <- ggplot(animal_data_with_outliers[animal_data_with_outliers$P.Product == "Goat", ], aes(x = P.Product, y = `Weight Gain_kg`)) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 19) +
+  labs(
+    x = "Animal Type",
+    y = "Weight Gain (kg/day)"
+  ) +
+  theme_minimal()
+
+plot_sheep <- ggplot(animal_data_with_outliers[animal_data_with_outliers$P.Product == "Sheep", ], aes(x = P.Product, y = `Weight Gain_kg`)) +
+  geom_boxplot(outlier.color = "red", outlier.shape = 19) +
+  labs(
+    x = "Animal Type",
+    y = "Weight Gain (kg/day)"
+  ) +
+  theme_minimal()
+
+# Combine the plots into one image in landscape orientation
+combined_plot <- grid.arrange(plot_cattle, plot_goat, plot_sheep, nrow = 1)
+
+# Display the combined plot
+print(combined_plot)
+
+```
+
+
+### 4.2 Plotting weight gain distribution without outliers
+This script creates a Shiny app that allows users to visualize the weight gain distribution of three livestock categories: "Cattle," "Goat," and "Sheep," with outliers excluded. The dataset WG is filtered to include only rows where the P.Product column matches the selected animal. To remove outliers, the script applies the Interquartile Range (IQR) method, calculating the first quartile (Q1), third quartile (Q3), and IQR. Data points falling outside the range of Q1 - 1.5 * IQR to Q3 + 1.5 * IQR are excluded. A box plot, generated using ggplot2, dynamically displays the weight gain distribution for the selected animal, providing a clean and focused view without the influence of extreme values
+
+```{r weight gain distribution without outliers, echo=TRUE, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(gridExtra)
+
+# Function to filter data for all animals and remove outliers
+filter_and_remove_outliers <- function(data) {
+  # Subset data for selected animals
+  animal_data <- data[data$P.Product %in% c("Cattle", "Goat", "Sheep"), ]
+  
+  # Remove outliers for each animal type
+  animal_data <- animal_data %>%
+    group_by(P.Product) %>%
+    filter(
+      `Weight Gain_kg` > quantile(`Weight Gain_kg`, 0.25, na.rm = TRUE) - 1.5 * IQR(`Weight Gain_kg`, na.rm = TRUE) &
+      `Weight Gain_kg` < quantile(`Weight Gain_kg`, 0.75, na.rm = TRUE) + 1.5 * IQR(`Weight Gain_kg`, na.rm = TRUE)
+    ) %>%
+    ungroup()
+  
+  return(animal_data)
+}
+
+# Filter and remove outliers for all animals
+animal_data <- filter_and_remove_outliers(WG)
+
+# Create individual plots for each animal
+plot_cattle <- ggplot(animal_data[animal_data$P.Product == "Cattle", ], aes(x = P.Product, y = `Weight Gain_kg`)) +
+  geom_boxplot() +
+  labs(
+    x = "Animal Type",
+    y = "Weight Gain (kg/day)"
+  ) +
+  theme_minimal()
+
+plot_goat <- ggplot(animal_data[animal_data$P.Product == "Goat", ], aes(x = P.Product, y = `Weight Gain_kg`)) +
+  geom_boxplot() +
+  labs(
+    x = "Animal Type",
+    y = "Weight Gain (kg/day)"
+  ) +
+  theme_minimal()
+
+plot_sheep <- ggplot(animal_data[animal_data$P.Product == "Sheep", ], aes(x = P.Product, y = `Weight Gain_kg`)) +
+  geom_boxplot() +
+  labs(
+    x = "Animal Type",
+    y = "Weight Gain (kg/day)"
+  ) +
+  theme_minimal()
+
+# Combine the plots into one image in landscape orientation
+combined_plot <- grid.arrange(plot_cattle, plot_goat, plot_sheep, nrow = 1)
+
+# Display the combined plot
+print(combined_plot)
+```
+
+## 5. Meta-analiysis of the tree fodders effectss on weigh gain in small ruminant sp. from Random Effect Models
+
+### 5.1 Loading Required Libraries and Functions
+
+``` {r meta analysis packages}
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
+install.packages("metafor")
+library(metafor)
+
+```
+
+### 5.2. Data cleaning and subsetting data to meta analysis
+
+Section focuses on filtering the dataset to a specific scope for meta-analysis. The data is then narrowed to livestock types of interest, cattle, goats, and sheep, and further refined to focus on key productivity outcome, specifically " "Weight Gain". The most representative tree species in the studies are also selected.
+
+```{r select relevant columns to meta analysis}
+
+# Select only relevant columns for meta analysis and most important trees feed
+MA_data <- data %>% 
+  select(Code, Tree.Feed, Author, Date, Country, Units, MeanC, MeanT, MeanT.Error, Mean.Error.Type, MeanC.Error, Rep.Animals, Out.SubInd, SubPrName, PrName, Product.Simple) %>% 
+  filter(Tree.Feed %in% c("Leucaena leucocephala", "Sesbania sesban", "Atriplex nummularia", "Ficus thonningii", "Prosopis juliflora", "Gliciridia sepium", "Moringa oleifera", "Opuntia ficus indica", "Leucaena pallida", "Erythrina brucei")) %>% 
+  filter(Out.SubInd %in% c("Weight Gain"))
+
+#Add Reference and DM column
+MA_data <- MA_data %>%
+  mutate(Reference = paste(Author, Date, sep = ", ")) 
+
+#Transform character variables in numeric
+MA_data$Rep.Animals <- as.numeric(MA_data$Rep.Animals)
+
+#Separate tables by ruminant sp.
+MA_dataCattle <- MA_data %>% filter(Product.Simple=="Cattle")
+MA_dataGoat <- MA_data %>% filter(Product.Simple=="Goat")
+MA_dataSheep <- MA_data %>% filter(Product.Simple=="Sheep")
+
+```
+
+### 5.3. Meta analysis
+
+```{r meta-analiysis of the tree fodders effect on weigh gain in small ruminant sp.}
+
+#Compute the effect measure, raw mean difference (MD) by supplying control and treatment means(MeanC and MeanT), corresponding SE (MeanC.Error and MeanT.Error), and sample size (Rep.Animals). This will create a new data set namely “MAdat”.
+
+MAdatCattle <- escalc(m1i=MeanT, sd1i=MeanT.Error, n1i=Rep.Animals,
+m2i=MeanC, sd2i=MeanC.Error, n2i=Rep.Animals,
+measure="MD", data=MA_dataCattle,
+append=TRUE)
+
+MAdatGoat <- escalc(m1i=MeanT, sd1i=MeanT.Error, n1i=Rep.Animals,
+m2i=MeanC, sd2i=MeanC.Error, n2i=Rep.Animals,
+measure="MD", data=MA_dataGoat,
+append=TRUE)
+
+MAdatSheep <- escalc(m1i=MeanT, sd1i=MeanT.Error, n1i=Rep.Animals,
+m2i=MeanC, sd2i=MeanC.Error, n2i=Rep.Animals,
+measure="MD", data=MA_dataSheep,
+append=TRUE)
+
+#Compute standardized MD (SMD) for the forest plots
+MAdatCattle2<- escalc(m1i=MeanT, sd1i=MeanT.Error, n1i=Rep.Animals,
+m2i=MeanC, sd2i=MeanC.Error, n2i=Rep.Animals,
+measure="SMD", data=MAdatCattle,
+append=TRUE)
+
+MAdatGoat2<- escalc(m1i=MeanT, sd1i=MeanT.Error, n1i=Rep.Animals,
+m2i=MeanC, sd2i=MeanC.Error, n2i=Rep.Animals,
+measure="SMD", data=MAdatGoat,
+append=TRUE)
+
+MAdatSheep2<- escalc(m1i=MeanT, sd1i=MeanT.Error, n1i=Rep.Animals,
+m2i=MeanC, sd2i=MeanC.Error, n2i=Rep.Animals,
+measure="SMD", data=MAdatSheep,
+append=TRUE)
+
+#Remove NA values
+MAdatCattle2 <- MAdatCattle2 %>% filter(!is.na(yi))
+MAdatGoat2 <- MAdatGoat2 %>% filter(!is.na(yi)) 
+MAdatSheep2 <- MAdatSheep2 %>% filter(!is.na(yi))
+
+```
+
+```{r forest-plot Cattle, fig.width=8, fig.height=6, echo=TRUE}
+#creating a forest plot Cattle using the SMD (using the “MAdat2” data)
+
+forest(MAdatCattle2$yi, MAdatCattle2$vi, 
+       slab = MAdatCattle2$Reference, 
+       digits = 1,
+       ilab= cbind(round(MAdatCattle2$MeanC),
+round(MAdatCattle2$MeanT)))
+
+```
+
+```{r forest-plot Goat, fig.width=8, fig.height=6, echo=TRUE}
+#creating a forest plot using the SMD (using the “MAdat2” data)
+
+forest(MAdatGoat2$yi, MAdatGoat2$vi, 
+       slab = MAdatGoat2$Reference, 
+       digits = 1,
+       ilab= cbind(round(MAdatGoat2$MeanC),
+round(MAdatGoat2$MeanT)))
+
+```
+
+```{r forest-plot Sheep, fig.width=8, fig.height=6, echo=TRUE}
+#creating a forest plot using the SMD (using the “MAdat2” data)
+
+forest(MAdatSheep2$yi, MAdatSheep2$vi, 
+       slab = MAdatSheep2$Reference, 
+       digits = 1,
+       ilab= cbind(round(MAdatSheep2$MeanC),
+round(MAdatSheep2$MeanT)))
+
+```
