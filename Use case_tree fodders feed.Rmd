@@ -3,6 +3,8 @@ title: "Use Case: Ruminant data"
 author: 
 - name: Anabella Lozza
   email: anabellalozza@agro.unlpam.edu.ar
+- name: Edward Garcia
+  email: E.H.Garcia@cgiar.org
 date: "2025-02-04"
 output:
   html_document:
