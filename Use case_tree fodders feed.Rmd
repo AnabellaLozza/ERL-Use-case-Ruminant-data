@@ -78,6 +78,10 @@ To achieve this, we will follow these steps:
 
 *5.2  Data cleaning and subsetting data to meta analysis*
 
+*5.3. Estimates to Meta analysis*
+
+*5.4. Plotting the effects*
+
 
 ## 1. Loading and saving the data
 
@@ -460,9 +464,11 @@ combined_plot <- grid.arrange(plot_cattle, plot_goat, plot_sheep, nrow = 1)
 print(combined_plot)
 ```
 
-## 5. Meta-analiysis of the tree fodders effectss on weigh gain in small ruminant sp. from Random Effect Models
+## 5. Meta-analiysis of the tree fodder effects on weight gain in small ruminant sp. from Random Effect Models
+This script creates a data subset to visualize the effects of tree forage on weight gain in three livestock categories: “Cattle”, “Goat” and “Sheep”. The dataset is filtered to include only the most important tree species.
 
 ### 5.1 Loading Required Libraries and Functions
+This section downloads the required R package to make the meta- analysis.
 
 ``` {r meta analysis packages}
 options(repos = c(CRAN = "https://cran.rstudio.com/"))
@@ -497,7 +503,8 @@ MA_dataSheep <- MA_data %>% filter(Product.Simple=="Sheep")
 
 ```
 
-### 5.3. Meta analysis
+### 5.3. Estimates to Meta analysis
+This script estimates the raw mean difference (MD) by supplying control and treatment means (MeanC and MeanT), corresponding SE (MeanC.Error and MeanT.Error), and sample size (Rep.Animals) to compute the effect measure. It will create a new " MAdat " data set for each ruminant species. The NA values were removed.
 
 ```{r meta-analiysis of the tree fodders effect on weigh gain in small ruminant sp.}
 
@@ -541,6 +548,12 @@ MAdatSheep2 <- MAdatSheep2 %>% filter(!is.na(yi))
 
 ```
 
+### 5.4 Plotting the effects
+A forest plot generated with the forest function shows the effects of tree fodder supplementation on ruminants sp in different studies.
+
+
+Plotting the effects in **Cattle**
+
 ```{r forest-plot Cattle, fig.width=8, fig.height=6, echo=TRUE}
 #creating a forest plot Cattle using the SMD (using the “MAdat2” data)
 
@@ -552,8 +565,10 @@ round(MAdatCattle2$MeanT)))
 
 ```
 
+Plotting the effects in **Goat**
+
 ```{r forest-plot Goat, fig.width=8, fig.height=6, echo=TRUE}
-#creating a forest plot using the SMD (using the “MAdat2” data)
+#creating a forest plot Goat using the SMD (using the “MAdat2” data)
 
 forest(MAdatGoat2$yi, MAdatGoat2$vi, 
        slab = MAdatGoat2$Reference, 
@@ -563,8 +578,10 @@ round(MAdatGoat2$MeanT)))
 
 ```
 
+Plotting the effects in **Sheep**
+
 ```{r forest-plot Sheep, fig.width=8, fig.height=6, echo=TRUE}
-#creating a forest plot using the SMD (using the “MAdat2” data)
+#creating a forest plot Sheep using the SMD (using the “MAdat2” data)
 
 forest(MAdatSheep2$yi, MAdatSheep2$vi, 
        slab = MAdatSheep2$Reference, 
